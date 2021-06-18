@@ -1,0 +1,81 @@
+---
+title: "BA810 Lab 3 - Regression tree"
+author: "Chiebuka Onwuzurike"
+date: "2/26/2021"
+output: html_document
+---
+
+```{r}
+# install.packages(c("rpart.plot", "rpart"))
+```
+
+## Loading Libraries 
+```{r}
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(scales)
+library(rpart)
+library(rpart.plot)
+theme_set(theme_bw())
+```
+
+## Splitting Train/Test
+```{r}
+dd <- fread("cogo-train.tsv", stringsAsFactors = T)
+```
+
+```{r}
+dd[, test:=0]
+dd[sample(nrow(dd), 100000), test:=1] 
+dd.test <- dd[test==1]
+dd.train <- dd[test==0]
+
+dd.train.sample.size <- 5000
+dd.train.sample <- dd.train[sample(nrow(dd.train), dd.train.sample.size)]
+
+dd.test.sample.size <- 5000
+dd.test.sample <- dd.test[sample(nrow(dd.test), dd.test.sample.size)]
+
+```
+
+## Simple Formula
+```{r}
+f1 <- as.formula(p_open ~ browser1 + browser2 + browser3)
+```
+
+## Setting up Variables
+```{r}
+x1.train.sample <- model.matrix(f1, dd.train.sample)[, -1]
+y.train <- dd.train$p_open
+y.train.sample <- dd.train.sample$p_open
+```
+
+```{r}
+dd.test[, p_open:=1] # hack so that the following line works
+x1.test <- model.matrix(f1, dd.test)[, -1]
+y.test <- dd.test$p_open
+```
+## Fitting Regression Tree
+```{r}
+fit.tree <- rpart(f1,
+dd.train.sample,
+control = rpart.control(cp = 0.001))
+```
+## Plot Regression Tree
+```{r}
+par(xpd = TRUE)
+plot(fit.tree, compress=TRUE)
+text(fit.tree, use.n=TRUE)
+```
+## RPart Plot
+```{r}
+rpart.plot(fit.tree)
+```
+## Prediciting Based on Tree
+```{r}
+yhat4.tree <- predict(fit.tree, dd.train.sample)
+mse.tree <- mean((yhat4.tree - y.train.sample) ^ 2)
+mse.tree
+```
+

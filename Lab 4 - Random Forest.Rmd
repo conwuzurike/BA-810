@@ -1,0 +1,74 @@
+---
+title: "BA810 Lab 4 - Random Forest"
+author: "Chiebuka Onwuzurike"
+date: "2/26/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# install.packages(c("randomForest"))
+```
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(scales)
+library(randomForest)
+theme_set(theme_bw())
+```
+
+## Splitting Train/Test
+```{r}
+dd <- fread("cogo-train.tsv", stringsAsFactors = T)
+```
+
+```{r}
+dd[, test:=0]
+dd[sample(nrow(dd), 100000), test:=1] 
+dd.test <- dd[test==1]
+dd.train <- dd[test==0]
+
+dd.train.sample.size <- 5000
+dd.train.sample <- dd.train[sample(nrow(dd.train), dd.train.sample.size)]
+
+dd.test.sample.size <- 5000
+dd.test.sample <- dd.test[sample(nrow(dd.test), dd.test.sample.size)]
+```
+
+## Simple Formula
+```{r}
+f1 <- as.formula(p_open ~ browser1 + browser2 + browser3)
+```
+
+## Setting up Variables
+```{r}
+x1.train.sample <- model.matrix(f1, dd.train.sample)[, -1]
+y.train <- dd.train$p_open
+y.train.sample <- dd.train.sample$p_open
+```
+
+```{r}
+dd.test[, p_open:=1] # hack so that the following line works
+x1.test <- model.matrix(f1, dd.test)[, -1]
+y.test <- dd.test$p_open
+```
+## Predict
+```{r}
+fit.rndfor <- randomForest(f1,
+dd.train.sample,
+ntree=500,
+do.trace=F)
+
+varImpPlot(fit.rndfor)
+```
+
+```{r}
+yhat.rndfor <- predict(fit.rndfor, dd.train.sample)
+mse.tree <- mean((yhat.rndfor - y.train.sample) ^ 2)
+print(mse.tree)
+```
