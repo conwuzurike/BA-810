@@ -1,0 +1,862 @@
+---
+title: "810project"
+author: "Team2"
+date: "2/25/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+
+## Install packages
+```{r}
+# install.packages("corrplot")
+# install.packages("googleway")
+# install.packages("caret")
+# install.packages("lattice")
+# install.packages("standardize")
+# install.packages('mice')
+# install.packages("gridExtra")
+# install.packages("rpart")
+# install.packages("rpart.plot")
+# install.packages("Metrics")
+# install.packages("dplyr")
+# install.packages("ipred")
+# install.packages(c("gbm"))
+```
+
+```{r}
+# if(!requireNamespace("devtools")) install.packages("devtools")
+# devtools::install_github("dkahle/ggmap", ref = "tidyup", force=TRUE)
+```
+
+
+
+## Setup
+```{r}
+library(data.table) 
+library(ggplot2) 
+library(ggthemes) 
+library(glmnet)
+library(corrplot)
+library(lattice)
+library(caret)
+library(standardize)
+library(ggmap)
+library(scales)
+library(gridExtra)
+library(rpart)
+library(rpart.plot)
+library(Metrics)
+library(dplyr)
+library(ipred)
+library(gbm)
+
+theme_set(theme_bw())
+```
+
+```{r}
+# Using API from GCP to get the map
+ggmap::register_google(key = "AIzaSyCkXRM7Y48Tu8kUNsm4jVkpscP9dFoESzg")
+```
+
+
+## Loading data
+```{r}
+dd <- fread("Melbourne_housing_FULL.csv")
+
+# data size and structure
+dim(dd)
+str(dd)
+```
+
+## Data Cleaning
+* We choose to remove all observation without Price, Landsize and Yearbuilt, because we think those are important criterias to make predictions. 
+* There are more than 60% of data missing in the BuildingArea columns. Since building area and landsize are highly correlated, we choose to drop the BuildingArea column. 
+* We fill the null values in the Car column with 0, because those houses or apartments do not have parking lots.
+```{r}
+# view missing values
+sum(is.na(dd))
+colSums(is.na(dd))
+```
+
+```{r}
+# removing missing values
+dd <- dd[!(is.na(dd$Price))]
+dd <- dd[,BuildingArea:=NULL]
+dd <- dd[!is.na(dd$Landsize)]
+dd <- dd[!is.na(dd$YearBuilt)]
+dd$Car[which(is.na(dd$Car))] <- 0
+dd <- dd[!is.na(dd$Lattitude)]
+colSums(is.na(dd))
+dim(dd)
+```
+
+## EDA
+Using API form GCP to get the map and see where are those houses located.
+```{r}
+ggmap(get_googlemap(center = c(lon = 144.9631, lat = -37.8136),
+      zoom = 10, scale = 2,
+      maptype ='terrain',
+      color = 'color')) +
+  geom_point(aes(x = Longtitude, y = Lattitude),colour='#F39B7FB2', data = dd, size = 0.2, alpha = 0.5) + 
+  theme(legend.position="bottom")
+```
+
+```{r}
+# checking correlations between numerical data
+mel_n <- dd[,c(3,5,9,11,12,13,14,15,20)]
+corrplot(cor(mel_n))
+```
+
+
+
+##### Interpretation
+* From the plot we notice that the number of bedroom is highly correlated to the number of rooms. 
+* Rooms and price has strong positive relationship. Houses with more rooms have higher price.
+* YearBuilt and price have positive relationship, which indicates as the older building tends to have higher price.
+* Houses that are far from CBD tend to have lower price.
+
+
+```{r}
+plot(Price ~ Distance, data = dd)
+```
+
+
+
+##### Interpretation
+* Houses that are far from CBD tend to have lower price.
+
+
+```{r}
+# The price distribution
+ggplot(data=dd,aes(x=Price))+
+  geom_histogram(binwidth=50000,fill='lightblue')
+```
+
+
+
+##### Interpretation
+* Most of the houses are under $1,250,000
+* There are some outliers have really high prices
+
+
+```{r}
+# average price for each region
+avg_price = dd[ ,mean(Price) ,by=Regionname]
+ggplot(avg_price, aes(x=Regionname, y=V1)) +
+  geom_bar(stat='identity',colour="white", fill="#4DBBD5B2") +
+  labs(x="Region", y="average price", title = "Average Price For Each Region") + 
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+
+
+##### Interpretation
+* Southern Metropolitan, has the highest average price overall
+* Western Victoria, has the lowest average price
+
+
+```{r}
+# Highest price regions
+ggplot(data = dd, aes(y=Lattitude, x=Longtitude)) + 
+  geom_point(aes(colour=Price), alpha=0.5) + 
+  scale_colour_gradient(low = "white", high = "navy") +
+  labs(title="High Price Area")
+```
+
+
+
+##### Interpretation
+* Houses in the center of Melbourne and along the Port Phillip Bay tend to have higher price.
+
+
+```{r}
+# Price differences for each type of houses
+ggplot(dd, aes(x=Propertycount, y=Price)) + 
+  geom_point(aes(colour=Type), alpha=0.4) +
+  theme_bw() + xlab("Property count") + 
+  labs(y = "Price", title = "Houses have higher price")
+```
+
+
+
+
+##### Interpretation
+* The majority of our samples are houses
+* House has higher price than townhouse and unit
+
+
+```{r}
+ggplot(data=dd, aes(x=factor(Rooms), y=Price))+
+        geom_boxplot() + labs(x='Rooms') +
+        scale_y_continuous(labels = comma)
+```
+
+
+
+```{r}
+dd$Date <- as.Date(dd$Date,"%d/%m/%Y")
+dd$SellYear <- format(as.Date(dd$Date),"%Y")
+dd$SellMonth <- format(as.Date(dd$Date),"%m")
+
+ys <- ggplot(dd, aes(x=as.factor(SellYear), y=Price)) +
+        geom_bar(stat='summary', fun = "mean", fill='#4DBBD5B2')+
+        scale_y_continuous(breaks= seq(0, 1300000, by=70000), labels = comma) +
+        geom_label(stat = "count", aes(label = ..count.., y = ..count..)) +
+        coord_cartesian(ylim = c(0, 1300000)) +
+        geom_hline(yintercept=1085593, linetype="dashed", color = "red") 
+#dashed line is median Price
+ms <- ggplot(dd[!is.na(dd$Price),], aes(x=SellMonth, y=Price)) +
+        geom_bar(stat='summary', fun = "mean", fill='#4DBBD5B2')+
+        scale_y_continuous(breaks= seq(0, 1300000, by=70000), labels = comma) +
+        geom_label(stat = "count", aes(label = ..count.., y = ..count..)) +
+        coord_cartesian(ylim = c(0, 1300000)) +
+        geom_hline(yintercept=1085593, linetype="dashed", color = "red") 
+#dashed line is median Price
+
+grid.arrange(ys, ms, widths=c(1,2))
+```
+
+
+
+```{r}
+n1 <- ggplot(dd, aes(x=Regionname, y=Price)) +
+        geom_bar(stat='summary', fun.y = "mean", fill='#4DBBD5B2') +
+        theme(axis.text.x = element_text(angle=90, hjust = 1)) +
+        scale_y_continuous(breaks= seq(0, 1500000, by=500000), labels = comma) +
+        geom_label(stat = "count", aes(label = ..count.., y = ..count..), size=3) +
+        geom_hline(yintercept=1085593, linetype="dashed", color = "red") #dashed line is median SalePrice
+n2 <- ggplot(data=dd, aes(x=Regionname)) +
+        geom_histogram(stat='count', fill='#E64B35B2')+
+        geom_label(stat = "count", aes(label = ..count.., y = ..count..), size=3)+
+        theme(axis.text.x = element_text(angle=90, hjust = 1))
+grid.arrange(n1, n2, nrow=1)
+```
+
+
+
+## Features Engineering
+- We convert Type, Method, CouncilArea and Regionname to factors
+- We create a new variable "age", which counts how many years from the house built to 2021.
+- We divide Date into Year and Month to help us understand the relationship between Price and Date
+```{r}
+dd$Type[dd$Type == 'h'] <- 1
+dd$Type[dd$Type == 't'] <- 2
+dd$Type[dd$Type == 'u'] <- 3
+dd$Type <- as.factor(dd$Type)
+```
+
+```{r}
+dd$Method[dd$Method == 'PI'] <- 1
+dd$Method[dd$Method == 'PN'] <- 2
+dd$Method[dd$Method == 'S'] <- 3
+dd$Method[dd$Method == 'SA'] <- 4
+dd$Method[dd$Method == 'SN'] <- 5
+dd$Method[dd$Method == 'SP'] <- 6
+dd$Method[dd$Method == 'SS'] <- 7
+dd$Method[dd$Method == 'VB'] <- 8
+dd$Method[dd$Method == 'W'] <- 9
+dd$Method <- as.factor(dd$Method)
+```
+
+```{r}
+dd$Regionname[dd$Regionname == 'Eastern Metropolitan'] <- 1
+dd$Regionname[dd$Regionname == 'Eastern Victoria'] <- 2
+dd$Regionname[dd$Regionname == 'Northern Metropolitan'] <- 3
+dd$Regionname[dd$Regionname == 'Northern Victoria'] <- 4
+dd$Regionname[dd$Regionname == 'South-Eastern Metropolitan'] <- 5
+dd$Regionname[dd$Regionname == 'Southern Metropolitan'] <- 6
+dd$Regionname[dd$Regionname == 'Western Metropolitan'] <- 7
+dd$Regionname[dd$Regionname == 'Western Victoria'] <- 8
+dd$Regionname <- as.factor(dd$Regionname)
+```
+
+```{r}
+dd$CouncilArea[dd$CouncilArea == 'Bayside City Council'] <- 1
+dd$CouncilArea[dd$CouncilArea == 'Boroondara City Council'] <- 2
+dd$CouncilArea[dd$CouncilArea == 'Brimbank City Council'] <- 3
+dd$CouncilArea[dd$CouncilArea == 'Cardinia Shire Council'] <- 4
+dd$CouncilArea[dd$CouncilArea == 'Casey City Council'] <- 5
+dd$CouncilArea[dd$CouncilArea == 'Darebin City Council'] <- 6 
+dd$CouncilArea[dd$CouncilArea == 'Frankston City Council'] <- 7
+dd$CouncilArea[dd$CouncilArea == 'Glen Eira City Council'] <- 8 
+dd$CouncilArea[dd$CouncilArea == 'Greater Dandenong City Council'] <- 9
+dd$CouncilArea[dd$CouncilArea == 'Hobsons Bay City Council'] <- 10 
+dd$CouncilArea[dd$CouncilArea == 'Hume City Council'] <- 11
+dd$CouncilArea[dd$CouncilArea == 'Kingston City Council'] <- 12
+dd$CouncilArea[dd$CouncilArea == 'Knox City Council'] <- 13
+dd$CouncilArea[dd$CouncilArea == 'Macedon Ranges Shire Council'] <- 14
+dd$CouncilArea[dd$CouncilArea == 'Manningham City Council'] <- 15
+dd$CouncilArea[dd$CouncilArea == 'Maribyrnong City Council'] <- 16
+dd$CouncilArea[dd$CouncilArea == 'Maroondah City Council'] <- 17
+dd$CouncilArea[dd$CouncilArea == 'Melbourne City Council'] <- 18
+dd$CouncilArea[dd$CouncilArea == 'Melton City Council'] <- 19
+dd$CouncilArea[dd$CouncilArea == 'Mitchell Shire Council'] <-20 
+dd$CouncilArea[dd$CouncilArea == 'Monash City Council'] <- 21
+dd$CouncilArea[dd$CouncilArea == 'Moonee Valley City Council'] <- 22
+dd$CouncilArea[dd$CouncilArea == 'Moorabool Shire Council'] <- 23
+dd$CouncilArea[dd$CouncilArea == 'Moreland City Council'] <- 24
+dd$CouncilArea[dd$CouncilArea == 'Nillumbik Shire Council'] <- 25
+dd$CouncilArea[dd$CouncilArea == 'Port Phillip City Council'] <- 26
+dd$CouncilArea[dd$CouncilArea == 'Stonnington City Council'] <- 27
+dd$CouncilArea[dd$CouncilArea == 'Whitehorse City Council'] <- 28
+dd$CouncilArea[dd$CouncilArea == 'Whittlesea City Council'] <- 29
+dd$CouncilArea[dd$CouncilArea == 'Wyndham City Council'] <- 30
+dd$CouncilArea[dd$CouncilArea == 'Yarra City Council'] <- 31
+dd$CouncilArea[dd$CouncilArea == 'Yarra Ranges Shire Council'] <- 32
+dd$CouncilArea <- as.factor(dd$CouncilArea)
+```
+
+
+```{r}
+dd$Date <- as.Date(dd$Date,"%d/%m/%Y")
+dd$SellYear <- format(as.Date(dd$Date),"%Y")
+dd$SellYear <- as.factor(dd$SellYear)
+dd$SellMonth <- format(as.Date(dd$Date),"%m")
+dd$SellMonth <- as.factor(dd$SellMonth)
+```
+
+```{r}
+dd <- dd[, age := 2021-YearBuilt]
+```
+
+```{r}
+dd <- dd[,-c('Suburb', 'Address', 'SellerG', 'Date', 'Postcode', 'YearBuilt', 'Lattitude', 'Longtitude')]
+```
+
+```{r}
+# standardize numeirc data
+dd[] <- lapply(dd, function(x) if(is.numeric(x)){
+                     scale(x, center=TRUE, scale=TRUE)
+                      } else x)
+```
+
+```{r}
+str(dd)
+```
+```{r}
+# split train/test sets
+set.seed(810)
+split = createDataPartition(y=dd$Price,p = 0.7,list = FALSE)
+train = dd[split,]
+test = dd[-split,]
+y.train <- train$Price 
+y.test <- test$Price
+```
+
+
+## Ridge and Lasso Regression
+```{r}
+# formula
+f1 <- as.formula(Price ~ Rooms + as.factor(Type) + as.factor(Method) + Distance + Bedroom2 + Bathroom + Car + Landsize + as.factor(CouncilArea)+ as.factor(Regionname) + as.factor(SellYear) +as.factor(SellMonth) + age + Propertycount)
+```
+
+```{r}
+# creating matrix
+x1.train <- model.matrix(f1, train)[, -1]
+x1.test <- model.matrix(f1, test)[, -1]
+```
+
+```{r}
+plot_coeffs <- function(model) {
+  coeffs <- coefficients(model)
+  df_coeffs <- data.frame("coeffs"=coeffs[,1],"variables"=rownames(coeffs))
+  plot <-ggplot(df_coeffs, aes(x=variables, y=coeffs))+
+  geom_bar(stat="identity") + labs(title = "Coefficients of Variables", x = "Coefficients", y = "Variables")
+  plot + coord_flip()
+}
+```
+
+
+```{r fig.width=7, fig.height=14, echo=FALSE}
+# Ridge Regression with 10 fold cross validation
+fit.ridge <- cv.glmnet(x1.train, y.train, alpha = 0, nfolds = 10)
+
+yhat.train.ridge <- predict(fit.ridge, x1.train, s = fit.ridge$lambda.min)
+mse.train.ridge <- mean((y.train - yhat.train.ridge)^2)
+mse.train.ridge
+
+
+yhat.test.ridge <- predict(fit.ridge, x1.test, s = fit.ridge$lambda.min)
+mse.test.ridge <- mean((y.test - yhat.test.ridge)^2)
+mse.test.ridge
+
+plot_coeffs(fit.ridge)
+
+coefficients(fit.ridge)
+```
+
+
+
+##### Results of Ridge
+* For the ridge regression we did a 10 fold cross validation to find the lambda that best fit the model and data set.
+* The train resulted in a MSE of 0.3353068 while test resulted in an expected higher MSE of 0.3611925.
+* The CouncilArea and type of building seems to have a stronger effect on the price of a house.
+
+
+
+```{r fig.width=7, fig.height=14, echo=FALSE}
+# Lasso Regression with 10 fold cross validation
+fit.lasso <- cv.glmnet(x1.train, y.train, alpha = 1, nfolds = 10)
+
+
+yhat.train.lasso <- predict(fit.lasso, x1.train, s = fit.lasso$lambda.min)
+mse.train.lasso <- mean((y.train - yhat.train.lasso)^2)
+mse.train.lasso
+
+yhat.test.lasso <- predict(fit.lasso, x1.test, s = fit.lasso$lambda.min)
+mse.test.lasso <- mean((y.test - yhat.test.lasso)^2)
+mse.test.lasso
+
+plot_coeffs(fit.lasso)
+coefficients(fit.lasso)
+```
+
+
+
+##### Result of Lasso
+* For the lasso regression we did a 10 fold cross validation to find the lambda that best fit the model and data set.
+* The train resulted in a MSE of 0.3316269 while test resulted in an expected higher MSE of 0.3562078.
+* Again the CouncilArea and type of building seems to have a stronger effect on the price of a house. Specifically Boroondara City Council(0.412293150) and Type3(-0.451226392).
+
+##### Overall Result
+Over all the redeuced dimension lasso regression did better than the ridge. The train for ridge and lasso were respectively 0.3353068(ridge) and 0.3316269(lasso). The test for ridge and lasso were respectively 0.3611925(ridge) and 0.3562078 (lasso).
+
+
+
+## Linear Regression
+```{r}
+# Using all variables to get the full model
+model1 <- lm(Price ~ Rooms+factor(Type)+factor(Method)+Distance+Bedroom2+Bathroom+Car+Landsize+age+factor(CouncilArea)+factor(Regionname)+Propertycount+factor(SellYear)+factor(SellMonth),data = train)
+summary(model1)
+```
+
+```{r}
+yhat.train.m1 <- predict(model1)
+mse.train.m1 <- mean((y.train - yhat.train.m1)^2)
+mse.train.m1
+
+yhat.test.m1 <- predict(model1, test) 
+mse.test.m1 <- mean((y.test - yhat.test.m1)^2)
+mse.test.m1
+```
+
+
+```{r}
+# Using significant variables
+model2 <- lm(Price ~ Rooms+factor(Type)+Distance+Bathroom+Car+Landsize+age+factor(CouncilArea)+factor(SellYear),data = train)
+summary(model2)
+```
+```{r}
+yhat.train.m2 <- predict(model2)
+mse.train.m2 <- mean((y.train - yhat.train.m2)^2)
+mse.train.m2
+
+yhat.test.m2 <- predict(model2, test) 
+mse.test.m2 <- mean((y.test - yhat.test.m2)^2)
+mse.test.m2
+```
+
+
+```{r}
+# Reduce to more variables
+model3 <- lm(Price ~ Rooms+factor(Type)+Distance+Bathroom+Car+Landsize+age+factor(SellYear),data = train)
+summary(model3)
+```
+
+```{r}
+yhat.train.m3 <- predict(model3)
+mse.train.m3 <- mean((y.train - yhat.train.m3)^2)
+mse.train.m3
+
+yhat.test.m3 <- predict(model3, test) 
+mse.test.m3 <- mean((y.test - yhat.test.m3)^2)
+mse.test.m3
+```
+
+```{r}
+# Variable interaction model
+model4 <- lm(Price ~ Rooms+factor(Type)+Distance+Bathroom+Car+Landsize+age+Landsize*age+factor(SellYear)+factor(CouncilArea),data = train)
+summary(model4)
+```
+
+```{r}
+yhat.train.m4 <- predict(model4)
+mse.train.m4 <- mean((y.train - yhat.train.m4)^2)
+mse.train.m4
+
+yhat.test.m4 <- predict(model4, test) 
+mse.test.m4 <- mean((y.test - yhat.test.m4)^2)
+mse.test.m4
+```
+
+
+```{r}
+# cross validation
+set.seed(810)
+train_control <- trainControl(method = "cv", 
+                              number = 10) 
+model_1 <- train(Price ~ Rooms+factor(Type)+factor(Method)+Distance+Bedroom2+Bathroom+Car+Landsize+age+factor(CouncilArea)+factor(Regionname)+Propertycount+factor(SellYear)+factor(SellMonth), data = dd,  
+               method = "lm", 
+               trControl = train_control)
+print(model_1)
+```
+
+```{r}
+set.seed(810)
+train_control <- trainControl(method = "cv", 
+                              number = 10) 
+model_2 <- train(Price ~ Rooms+factor(Type)+Distance+Bathroom+Car+Landsize+age+factor(CouncilArea)+factor(SellYear), data = dd,  
+               method = "lm", 
+               trControl = train_control)
+print(model_2)
+```
+
+```{r}
+set.seed(810)
+train_control <- trainControl(method = "cv", 
+                              number = 10) 
+model_3 <- train(Price ~ Rooms+factor(Type)+Distance+Bathroom+Car+Landsize+age+factor(SellYear), data = dd,  
+               method = "lm", 
+               trControl = train_control)
+print(model_3)
+```
+
+```{r}
+set.seed(810)
+train_control <- trainControl(method = "cv", 
+                              number = 10) 
+model_4 <- train(Price ~ Rooms+factor(Type)+Distance+Bathroom+Car+Landsize+age+Landsize*age+factor(SellYear)+factor(CouncilArea), data = dd,  
+               method = "lm", 
+               trControl = train_control)
+print(model_4)
+```
+
+
+
+## Regression Tree
+```{r}
+RT_fit <- rpart(Price~., data = train, method = 'anova')
+#we specify anova as we aim for regression (rather than classification)
+rpart.plot(RT_fit)
+```
+
+```{r}
+predictions1 <- predict(RT_fit,train)
+Rmse1 <- rmse(predictions1, y.train)
+MSE1_train=Rmse1^2
+print(MSE1_train)
+
+predictions2 <- predict(RT_fit, test)
+Rmse2 <- rmse(predictions2, y.test)
+MSE1_test=Rmse2^2
+print(MSE1_test)
+```
+
+```{r}
+summary(RT_fit)
+```
+
+
+##### Results
+From above model summary report, we can see that 11 variables are used to construct the tree with 11 internal nodes resulting in 12 terminal nodes and MSE on the test data is 0.4012.
+
+
+
+```{r}
+plotcp(RT_fit)
+```
+
+
+
+##### Interpretation
+* Now we find diminishing returns after 12 terminal nodes as illustrated:
+  * y-axis is cross validation error
+  * lower x-axis is cost complexity (α) value 
+  * upper x-axis is the number of terminal nodes (tree size = |T|)
+  * The dashed line which goes through the point |T|=9.
+* Rpart is performing some automated tuning, with an optimal subtree of 11 splits, 12 terminal nodes, and a cross-validated error of 0.4227.
+* Thus, we could use a tree with 9 terminal nodes.
+
+
+```{r}
+hyper_grid <- expand.grid(minsplit = seq(5, 20, 1),
+                          maxdepth = seq(8, 15, 1))
+```
+
+
+```{r}
+models <- list()
+for (i in 1:nrow(hyper_grid)) {
+
+  # get minsplit, maxdepth values at row i
+  minsplit <- hyper_grid$minsplit[i]
+  maxdepth <- hyper_grid$maxdepth[i]
+
+  # train a model and store in the list
+  models[[i]] <- rpart(
+    formula = Price ~ .,
+    data    = train,
+    method  = "anova",
+    control = list(minsplit = minsplit, maxdepth = maxdepth)
+    )
+}
+```
+
+```{r}
+# function to get optimal cp
+get_cp <- function(x) {
+  min    <- which.min(x$cptable[, "xerror"])
+  cp <- x$cptable[min, "CP"] 
+}
+
+# function to get minimum error
+get_min_error <- function(x) {
+  min    <- which.min(x$cptable[, "xerror"])
+  xerror <- x$cptable[min, "xerror"] 
+}
+
+hyper_grid %>%
+  mutate(
+    cp    = purrr::map_dbl(models, get_cp),
+    error = purrr::map_dbl(models, get_min_error)
+    ) %>%
+  arrange(error) %>%
+  top_n(-5, wt = error)
+```
+After a little data wrangling to extract the optimal α value and its respective error, adding it back to our grid, and filter for the top 5 minimal error values we see that the optimal model makes a slight improvement over our earlier model (xerror of 0.4121 versus 0.428).
+
+
+```{r}
+optimal_tree <- rpart(
+    formula = Price ~ .,
+    data    = train,
+    method  = "anova",
+    control = list(minsplit = 7, maxdepth = 9, cp = 0.01)
+    )
+```
+
+```{r}
+pred <- predict(optimal_tree, test)
+Rmse_final <- rmse(pred, y.test)
+MSE2_test=Rmse_final^2
+MSE2_test
+```
+
+## Bagging
+```{r}
+# make bootstrapping reproducible
+set.seed(820)
+# train bagged model
+bagged_m1 <- bagging(
+  formula = Price ~ .,
+  data    = train,
+  coob    = TRUE
+)
+
+bagged_m1 
+```
+
+```{r}
+pred <- predict(bagged_m1, newdata = test)
+Rmse_bagging <- rmse(pred = pred, test$Price)
+MSE3_test_bagging=Rmse_bagging^2
+MSE3_test_bagging
+```
+
+
+```{r}
+# Specify 10-fold cross validation
+ctrl <- trainControl(method = "cv",  number = 10) 
+
+# CV bagged model
+bagged_cv <- train(
+  Price ~ .,
+  data = train,
+  method = "treebag",
+  trControl = ctrl,
+  importance = TRUE
+  )
+
+# assess results
+bagged_cv
+```
+
+
+```{r}
+plot(varImp(bagged_cv), 20) 
+```
+
+```{r}
+pred4 <- predict(bagged_cv, test)
+Rmse4 <- rmse(pred4, test$Price)
+MSE4_test_bagging <- Rmse4^2
+MSE4_test_bagging
+```
+
+## Random Forest
+### ntree=500 (default)
+```{r}
+# measure execution time
+set.seed(810)
+
+rf <-
+  randomForest(formula = Price ~ .,
+               data = train,
+               importance = TRUE)
+rf
+```
+The above MSE and Variance explained are calculated using Out-of-Bag(OOB) error estimation. The number of variables randomly selected at each split is 4.
+
+```{r}
+# RMSE
+rf.pred <- predict(rf, newdata = test)
+rf.meanErr <- mean(abs(rf.pred - test$Price))
+rf.rmse <- rmse(test$Price, rf.pred)
+rf.rmse
+```
+
+```{r}
+# plot the error vs number of trees
+plot(rf)
+# abline(h = 0.1369, col = "blue", lty = 2)
+```
+From the above figure, we can notice that how the error is decreasing as we keep on adding more trees. We can find that the average error of the model starts to stabilize at about 100 trees, and the average error decreases at a slower rate starting at about 300 trees.
+
+
+### Find the number of trees that minimize the MSE
+```{r}
+# rf0$mse
+which.min(rf$mse)
+```
+
+The RMSE of the optimal random forest is (the error of the average Price):
+```{r}
+sqrt(rf$mse[which.min(rf$mse)])
+```
+
+
+### The Validation Set Approach
+```{r}
+# split original training data into training and validation sets by 70/30
+library(rsample)
+set.seed(810)
+split_valid <- initial_split(train, .7)
+train_v2 <- analysis(split_valid)
+train_valid <- assessment(split_valid)
+
+
+# split the validation set into x_test and y_test
+y_test <- train_valid$Price
+# x_test <- train_valid[setdiff(names(train_valid), 'Price')]
+x_test <- train_valid[,-c('Price')]
+```
+
+
+```{r}
+# Use x_test and y_test as parameters of the validation data set in randomForest()
+rf_oob <- randomForest(
+  formula = Price ~ .,
+  data = train_v2,
+  xtest = x_test,
+  ytest = y_test
+)
+ 
+rf_oob
+```
+We can see that the model results have Test set MSE, which is different from the original OOB MES. We extract the OOB error and test error corresponding to the model and plot a graph of the change of error with the number of trees.
+
+### OOB error vs. test set error
+```{r}
+# extract OOB & validation errors
+oob_rmse <- sqrt(rf_oob$mse)
+valid_rmse <- sqrt(rf_oob$test$mse)
+
+# plot
+library(dplyr)
+data.frame(
+  ntrees = 1:rf_oob$ntree,
+  OOB.error = oob_rmse,
+  test.error = valid_rmse
+) %>%
+  gather(key = metric, value = RMSE, 2:3) %>%
+  ggplot(aes(x = ntrees, y = RMSE, color = metric)) +
+  geom_line() +
+  xlab("Number of trees")
+```
+The orange line is the OOB error and the blue line is the error calculated on test set. The RMSE in two curves are correlated, and the RMSE tends to stabilize at around `ntree = 300`.
+
+## Tuning
+```{r}
+set.seed(810)
+
+# Plot the OOB error value corresponding to each mtry value
+bestmtry <- tuneRF(
+  x = train[,-c('Price')],
+  y = train$Price,
+  stepFactor = 1,
+  improve = 1e-5,
+  ntree = 500
+)
+plot(bestmtry)
+```
+After mtry > 9, OOB starts to stop decreasing. Thus we choose `mrty = 9` as the optimal mtry level. Here we use `mtry = 9`.
+
+### ntree=500, mtry=9
+```{r}
+# Measure execution time
+set.seed(810)
+
+rf2 <-
+  randomForest(
+    formula = Price ~ .,
+    data = train,
+    mtry = 9,
+    importance = TRUE
+  )
+rf2
+```
+
+
+```{r}
+# View the importance of each variable
+importance(rf2)
+```
+
+
+```{r}
+# Plot of these importance measures
+varImpPlot (rf2)
+```
+
+
+## Boosting
+```{r}
+fit.bsttree <- gbm(Price ~ .,
+                 data = train,
+                 distribution = "gaussian", n.trees = 500, interaction.depth = 2, shrinkage = 0.01)
+
+relative.influence(fit.bsttree)
+```
+
+```{r}
+# training mse
+yhat.bsttree <- predict(fit.bsttree, train, n.trees = 500) 
+mse.bsttree <- mean((yhat.bsttree - y.train) ^ 2) 
+print(mse.bsttree)
+```
+
+```{r}
+# testing mse
+yhat.bsttree.t <- predict(fit.bsttree, test, n.trees=500)
+mse.bsttree.t <- mean((yhat.bsttree.t - y.test) ^ 2)
+print(mse.bsttree.t)
+```
+
