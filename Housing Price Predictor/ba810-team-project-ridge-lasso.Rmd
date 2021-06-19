@@ -1,0 +1,158 @@
+---
+title: "810project"
+author: "Chiebuka Onwuzurike (U15815811)"
+date: "2/21/2021"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+```{r}
+library(data.table) 
+library(ggplot2) 
+library(ggthemes) 
+library(glmnet) 
+theme_set(theme_bw())
+```
+```{r}
+dd <- fread("/Users/chieb/Documents/Coding/School_Work/BA 810/Melbourne_housing_FULL.csv")
+# data size and structure
+# dim(dd)
+# str(dd)
+```
+## Data Cleaning
+```{r}
+# view missing values
+sum(is.na(dd))
+colSums(is.na(dd))
+```
+```{r}
+# removing missing values
+dd <- dd[!(is.na(dd$Price))]
+dd <- dd[,BuildingArea:=NULL]
+dd <- dd[!is.na(dd$Landsize)]
+dd <- dd[!is.na(dd$YearBuilt)]
+dd$Car[which(is.na(dd$Car))] <- 0
+colSums(is.na(dd))
+dim(dd)
+```
+## Features Engineering
+```{r}
+dd$Type[dd$Type == 'h'] <- 1
+dd$Type[dd$Type == 't'] <- 2
+dd$Type[dd$Type == 'u'] <- 3
+dd$Type <- as.factor(dd$Type)
+```
+```{r}
+dd$Method[dd$Method == 'PI'] <- 1
+dd$Method[dd$Method == 'PN'] <- 2
+dd$Method[dd$Method == 'S'] <- 3
+dd$Method[dd$Method == 'SA'] <- 4
+dd$Method[dd$Method == 'SN'] <- 5
+dd$Method[dd$Method == 'SP'] <- 6
+dd$Method[dd$Method == 'SS'] <- 7
+dd$Method[dd$Method == 'VB'] <- 8
+dd$Method[dd$Method == 'W'] <- 9
+dd$Method <- as.factor(dd$Method)
+```
+```{r}
+dd$Regionname[dd$Regionname == 'Eastern Metropolitan'] <- 1
+dd$Regionname[dd$Regionname == 'Eastern Victoria'] <- 2
+dd$Regionname[dd$Regionname == 'Northern Metropolitan'] <- 3
+dd$Regionname[dd$Regionname == 'Northern Victoria'] <- 4
+dd$Regionname[dd$Regionname == 'South-Eastern Metropolitan'] <- 5
+dd$Regionname[dd$Regionname == 'Southern Metropolitan'] <- 6
+dd$Regionname[dd$Regionname == 'Western Metropolitan'] <- 7
+dd$Regionname[dd$Regionname == 'Western Victoria'] <- 8
+dd$Regionname <- as.factor(dd$Regionname)
+```
+```{r}
+dd$Date <- as.Date(dd$Date,"%d/%m/%Y")
+```
+
+## Splitting data into training and test set by creating new column to identify test. Split 80/20
+```{r}
+dd[, test:=0]
+dd[sample(nrow(dd), round(nrow(dd)*.2, digits = 0)), test:=1]
+dd.test <- dd[test==1]
+dd.train <- dd[test==0]
+```
+
+colnames(dd)
+
+## Formulas
+```{r}
+f1 <- as.formula(Price ~ Rooms + Type + Method + Distance + Bedroom2 + Bathroom + Car + Regionname)
+# Unused Variables: SellerG + Subrub +  Date  + Postcode + CouncilArea
+```
+
+## Creating Variables
+
+```{r} 
+x1.train <- model.matrix(f1, dd.train)[, -1]
+x1.test <- model.matrix(f1, dd.test)[, -1]
+y.train <- dd.train$Price
+y.test <- dd.test$Price
+```
+
+dim(x1.train)
+length(y.train)
+dim(x1.test)
+length(y.test)
+
+
+length(unique(dd$Postcode))
+
+length(unique(dd$CouncilArea))
+
+ ## Baseline Linear Regression
+```{r}
+fit.lm <- lm(f1, dd.train)
+
+yhat.train.lm <- predict(fit.lm)
+mse.train.lm <- mean((y.train - yhat.train.lm)^2)
+mse.train.lm
+
+yhat.test.lm <- predict(fit.lm, dd.test)
+mse.test.lm <- mean((y.test - yhat.test.lm)^2)
+mse.test.lm
+```
+
+## Ridge Regression with 10 fold cross validation
+```{r}
+fit.ridge <- cv.glmnet(x1.train, y.train, alpha = 0, nfolds = 10)
+
+yhat.train.ridge <- predict(fit.ridge, x1.train, s = fit.ridge$lambda.min)
+mse.train.ridge <- mean((y.train - yhat.train.ridge)^2)
+mse.train.ridge
+
+
+yhat.test.ridge <- predict(fit.ridge, x1.test, s = fit.ridge$lambda.min)
+mse.test.ridge <- mean((y.test - yhat.test.ridge)^2)
+mse.test.ridge
+```
+
+## Lasso Regression with 10 fold cross validation
+```{r}
+fit.lasso <- cv.glmnet(x1.train, y.train, alpha = 1, nfolds = 10)
+
+
+yhat.train.lasso <- predict(fit.lasso, x1.train, s = fit.lasso$lambda.min)
+mse.train.lasso <- mean((y.train - yhat.train.lasso)^2)
+mse.train.lasso
+
+yhat.test.lasso <- predict(fit.lasso, x1.test, s = fit.lasso$lambda.min)
+mse.test.lasso <- mean((y.test - yhat.test.lasso)^2)
+mse.test.lasso
+```
+
+plot_coeffs <- function(model) {
+      coeffs <- coefficients(model)
+      mp <- barplot(coeffs, col="#3F97D0", xaxt='n', main="Regression Coefficients")
+      lablist <- names(coeffs)
+      text(mp, par("usr")[3], labels = lablist, srt = 45, adj = c(1.1,1.1), xpd = TRUE, cex=0.6)
+    }
+
+plot_coeffs(x1.train)

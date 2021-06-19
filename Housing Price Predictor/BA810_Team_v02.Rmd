@@ -1,0 +1,178 @@
+---
+title: "BA810_Team_v02"
+author: "Chiebuaka Onwuzurike (U15815811)"
+date: "2/24/2021"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+```{r}
+library(data.table) 
+library(ggplot2) 
+library(ggthemes) 
+library(glmnet)
+library(corrplot)
+library(lattice)
+library(caret)
+library(standardize)
+library(ggmap)
+library(mice)
+theme_set(theme_bw())
+```
+## Loading data
+```{r}
+dd <- fread("Melbourne_housing_FULL.csv")
+# data size and structure
+dim(dd)
+str(dd)
+```
+```{r}
+# view missing values
+sum(is.na(dd))
+colSums(is.na(dd))
+```
+```{r}
+# removing missing values
+dd <- dd[!(is.na(dd$Price))]
+dd <- dd[,BuildingArea:=NULL]
+dd <- dd[!is.na(dd$Landsize)]
+dd <- dd[!is.na(dd$YearBuilt)]
+dd$Car[which(is.na(dd$Car))] <- 0
+dd <- dd[!is.na(dd$Lattitude)]
+colSums(is.na(dd))
+dim(dd)
+```
+```{r}
+dd$Type[dd$Type == 'h'] <- 1
+dd$Type[dd$Type == 't'] <- 2
+dd$Type[dd$Type == 'u'] <- 3
+dd$Type <- as.factor(dd$Type)
+```
+```{r}
+dd$Method[dd$Method == 'PI'] <- 1
+dd$Method[dd$Method == 'PN'] <- 2
+dd$Method[dd$Method == 'S'] <- 3
+dd$Method[dd$Method == 'SA'] <- 4
+dd$Method[dd$Method == 'SN'] <- 5
+dd$Method[dd$Method == 'SP'] <- 6
+dd$Method[dd$Method == 'SS'] <- 7
+dd$Method[dd$Method == 'VB'] <- 8
+dd$Method[dd$Method == 'W'] <- 9
+dd$Method <- as.factor(dd$Method)
+```
+```{r}
+dd$Regionname[dd$Regionname == 'Eastern Metropolitan'] <- 1
+dd$Regionname[dd$Regionname == 'Eastern Victoria'] <- 2
+dd$Regionname[dd$Regionname == 'Northern Metropolitan'] <- 3
+dd$Regionname[dd$Regionname == 'Northern Victoria'] <- 4
+dd$Regionname[dd$Regionname == 'South-Eastern Metropolitan'] <- 5
+dd$Regionname[dd$Regionname == 'Southern Metropolitan'] <- 6
+dd$Regionname[dd$Regionname == 'Western Metropolitan'] <- 7
+dd$Regionname[dd$Regionname == 'Western Victoria'] <- 8
+dd$Regionname <- as.factor(dd$Regionname)
+```
+```{r}
+dd$CouncilArea <- as.factor(dd$CouncilArea)
+```
+```{r}
+dd$Date <- as.Date(dd$Date,"%d/%m/%Y")
+dd$SellYear <- format(as.Date(dd$Date),"%Y")
+dd$SellMonth <- format(as.Date(dd$Date),"%m")
+```
+```{r}
+dd[, age := 2021-YearBuilt]
+```
+```{r}
+dd <- dd[,-c('Suburb', 'Address', 'SellerG', 'Date', 'Postcode', 'YearBuilt', 'Lattitude', 'Longtitude')]
+```
+```{r}
+# standardize numeirc data
+dd[] <- lapply(dd, function(x) if(is.numeric(x)){
+                     scale(x, center=TRUE, scale=TRUE)
+                      } else x)
+```
+```{r}
+# split train/test sets
+set.seed(810)
+split = createDataPartition(y=dd$Price,p = 0.7,list = FALSE)
+train = dd[split,]
+test = dd[-split,]
+y.train <- train$Price 
+y.test <- test$Price
+```
+
+View(dd)
+
+## Formulas
+```{r}
+f1 <- as.formula(Price ~ Rooms + as.factor(Type) + as.factor(Method) + Distance + Bedroom2 + Bathroom + Car + Landsize + as.factor(CouncilArea)+ as.factor(Regionname) + as.factor(SellYear) +as.factor(SellMonth) + age + Propertycount)
+```
+
+## Creating Variables
+```{r} 
+x1.train <- model.matrix(f1, train)[, -1]
+x1.test <- model.matrix(f1, test)[, -1]
+```
+
+## Plot function
+```{r} 
+plot_coeffs <- function(model) {
+  coeffs <- coefficients(model)
+  df_coeffs <- data.frame("coeffs"=coeffs[,1],"variables"=rownames(coeffs))
+  plot <-ggplot(df_coeffs, aes(x=variables, y=coeffs))+
+  geom_bar(stat="identity") + labs(title = "Coefficients of Variables", x = "Coefficients", y = "Variables")
+  plot + coord_flip()
+}
+```
+
+
+
+## Ridge Regression with 10 fold cross validation
+```{r fig.width=7, fig.height=14, echo=FALSE}
+fit.ridge <- cv.glmnet(x1.train, y.train, alpha = 0, nfolds = 10)
+
+yhat.train.ridge <- predict(fit.ridge, x1.train, s = fit.ridge$lambda.min)
+mse.train.ridge <- mean((y.train - yhat.train.ridge)^2)
+mse.train.ridge
+
+
+yhat.test.ridge <- predict(fit.ridge, x1.test, s = fit.ridge$lambda.min)
+mse.test.ridge <- mean((y.test - yhat.test.ridge)^2)
+mse.test.ridge
+
+plot_coeffs(fit.ridge)
+
+coefficients(fit.ridge)
+```
+### Results of Ridge
+For the ridge regression we did a 10 fold cross validation to find the lambda that best fit the model and data set.
+The train resulted in a MSE of 0.3353068 while test resulted in an expected higher MSE of 0.3611925.
+The CouncilArea and type of building seems to have a stronger effect on the price of a house.
+
+
+
+## Lasso Regression with 10 fold cross validation
+```{r fig.width=7, fig.height=14, echo=FALSE}
+fit.lasso <- cv.glmnet(x1.train, y.train, alpha = 1, nfolds = 10)
+
+
+yhat.train.lasso <- predict(fit.lasso, x1.train, s = fit.lasso$lambda.min)
+mse.train.lasso <- mean((y.train - yhat.train.lasso)^2)
+mse.train.lasso
+
+yhat.test.lasso <- predict(fit.lasso, x1.test, s = fit.lasso$lambda.min)
+mse.test.lasso <- mean((y.test - yhat.test.lasso)^2)
+mse.test.lasso
+
+plot_coeffs(fit.lasso)
+coefficients(fit.lasso)
+```
+For the lasso regression we did a 10 fold cross validation to find the lambda that best fit the model and data set.
+The train resulted in a MSE of 0.3316269 while test resulted in an expected higher MSE of 0.3562078.
+Again the CouncilArea and type of building seems to have a stronger effect on the price of a house. Specifically Boroondara City Council(0.412293150) and Type3(-0.451226392).
+
+Over all the redeuced dimension lasso regression did better than the ridge. The train for ridge and lasso were respectively 0.3353068(ridge) and 0.3316269(lasso). The test for ridge and lasso were respectively 0.3611925(ridge) and 0.3562078 (lasso). 
+
